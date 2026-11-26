@@ -5,6 +5,7 @@
 
 mod census;
 mod inspect;
+mod preload;
 mod run;
 mod shader;
 mod translate;
@@ -112,6 +113,20 @@ enum Command {
         #[arg(last = true)]
         title_args: Vec<String>,
     },
+    /// Preload all shaders from the game directory into the shader cache.
+    /// Equivalent to `translate --warm all` on the configured game paths.
+    Preload {
+        /// Check emitted DXIL with dxil.dll's validator (`VICTORY_DXIL`,
+        /// else the newest Windows SDK's).
+        #[arg(long)]
+        validate: bool,
+        /// Also create a host D3D12 pipeline for each emitted shader.
+        #[arg(long)]
+        pipelines: bool,
+        /// Worker threads (default: every logical core).
+        #[arg(long)]
+        jobs: Option<usize>,
+    },
     /// Show the resolved configuration and check it.
     Config,
 }
@@ -182,6 +197,7 @@ fn main() -> Result<()> {
             console,
             title_args: _,
         } => run::run(&exe, unimplemented, strict, execute, console),
+        Command::Preload { validate, pipelines, jobs } => preload::run(validate, pipelines, jobs),
         Command::Config => show_config(),
     }
 }
@@ -219,7 +235,7 @@ fn show_config() -> Result<()> {
 }
 
 /// Paths given on the command line, or the configured game + test titles.
-pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+pub fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     if !paths.is_empty() {
         return Ok(paths);
     }
