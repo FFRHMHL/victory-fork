@@ -32,6 +32,13 @@ use windows_sys::core::BOOL;
 
 use crate::{HleModule, hle_export};
 
+#[cfg(all(windows, feature = "unified_memory"))]
+use victory_gpu::{
+    unified_memory_create_heap, unified_memory_allocate_buffer, unified_memory_cpu_ptr,
+    unified_memory_apu_gpu_va, unified_memory_release_buffer,
+    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+};
+
 const MIB: usize = 1 << 20;
 
 /// Whether we run under Wine (its ntdll exports `wine_get_version`).
@@ -49,6 +56,10 @@ pub(crate) fn on_wine() -> bool {
 
 /// Standard memory the title has handed to the system.
 static TRANSFERRED: AtomicUsize = AtomicUsize::new(0);
+
+/// Unified memory heap for graphics allocations (created on first graphics alloc).
+#[cfg(all(windows, feature = "unified_memory"))]
+static UNIFIED_HEAP: std::sync::OnceLock<victory_gpu::UnifiedBufferHandle> = std::sync::OnceLock::new();
 
 // Console additions to the host's flags.
 /// 2 MiB pages; the host reads this bit as large pages, which need a
@@ -179,6 +190,47 @@ fn virtual_alloc(
             at = format_args!("{at:p}"),
             "XMemVirtualAlloc"
         );
+    }
+
+    // If this is a graphics allocation and unified memory is enabled,
+    // also allocate a buffer in the unified heap for cross-adapter sharing.
+    #[cfg(all(windows, feature = "unified_memory"))]
+    if !at.is_null() && (flags & GRAPHICS) != 0 && kind & MEM_COMMIT != 0 {
+        // Initialize unified heap on first graphics allocation
+        let heap = UNIFIED_HEAP.get_or_init(|| {
+            match unified_memory_create_heap(256 * 1024 * 1024) {
+                Ok(h) => {
+                    tracing::info!("unified memory: created 256 MB heap for graphics allocations");
+                    h
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "unified memory: failed to create heap, falling back to regular allocations");
+                    // Return a dummy handle that will fail gracefully
+                    victory_gpu::UnifiedBufferHandle { heap_id: 0, offset: 0 }
+                }
+            }
+        });
+
+        // Allocate a unified buffer for this graphics memory
+        if heap.heap_id != 0 {
+            let buffer_size = size.next_multiple_of(64 * 1024);
+            if let Ok(buffer) = unified_memory_allocate_buffer(heap, buffer_size as u64, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) {
+                if let Some(cpu_ptr) = unified_memory_cpu_ptr(&buffer) {
+                    // Copy any initial data from the regular allocation to unified buffer
+                    if protect != PAGE_NOACCESS {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(at as *const u8, cpu_ptr, size.min(buffer_size));
+                        }
+                    }
+                    tracing::debug!(
+                        address = format_args!("{at:p}"),
+                        size,
+                        unified_gpu_va = format_args!("{:#x}", unified_memory_apu_gpu_va(&buffer).unwrap_or(0)),
+                        "XMemVirtualAlloc: graphics memory also in unified heap"
+                    );
+                }
+            }
+        }
     }
     // Memory committed for the title: the GPU side's notes that blocks there
     // are uncommitted go (`VICTORY_ABSENT_ONCE`).

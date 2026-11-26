@@ -49,6 +49,8 @@ mod host;
 mod indirect;
 #[cfg(windows)]
 mod inplace;
+#[cfg(all(windows, feature = "unified_memory"))]
+mod unified_memory;
 pub mod list;
 pub mod object;
 pub mod pipeline;
@@ -90,4 +92,24 @@ pub use inplace::{title_memory_freeing, title_memory_section, title_memory_view}
 pub use watch::{
     title_memory_committed, title_memory_reading, title_memory_remapped, title_memory_remapping, title_memory_written,
     writing as kernel_will_write,
+};
+
+#[cfg(all(windows, feature = "unified_memory"))]
+pub use unified_memory::{
+    init as unified_memory_init,
+    attach_dgpu as unified_memory_attach_dgpu,
+    create_heap as unified_memory_create_heap,
+    allocate_buffer as unified_memory_allocate_buffer,
+    release_buffer as unified_memory_release_buffer,
+    cpu_ptr as unified_memory_cpu_ptr,
+    apu_gpu_va as unified_memory_apu_gpu_va,
+    dgpu_gpu_va as unified_memory_dgpu_gpu_va,
+    buffer_size as unified_memory_buffer_size,
+    buffer_residency as unified_memory_buffer_residency,
+    migrate_to_dgpu as unified_memory_migrate_to_dgpu,
+    migrate_to_apu as unified_memory_migrate_to_apu,
+    finalize_migration as unified_memory_finalize_migration,
+    print_stats as unified_memory_print_stats,
+    Residency,
+    UnifiedBufferHandle,
 };

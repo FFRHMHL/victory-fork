@@ -916,6 +916,11 @@ fn create() -> windows::core::Result<Host> {
         let adapter = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             .and_then(|factory| factory.EnumAdapterByLuid::<IDXGIAdapter3>(device.GetAdapterLuid()))
             .ok();
+
+        // If unified_memory feature is enabled, try to find and attach a dGPU
+        #[cfg(all(windows, feature = "unified_memory"))]
+        try_attach_dgpu_for_unified_memory(&device);
+
         tracing::info!("host D3D12 device ready");
         Ok(Host {
             device,
@@ -933,6 +938,84 @@ fn create() -> windows::core::Result<Host> {
             presenter: Mutex::new(None),
             adapter,
         })
+    }
+}
+
+/// Try to find and attach a discrete GPU for unified memory cross-adapter sharing.
+/// Called during host device creation when the `unified_memory` feature is enabled.
+#[cfg(all(windows, feature = "unified_memory"))]
+fn try_attach_dgpu_for_unified_memory(apu_device: &ID3D12Device) {
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, IDXGIFactory4, DXGI_CREATE_FACTORY_FLAGS};
+    use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
+    use windows::Win32::Graphics::Direct3D12::D3D12CreateDevice;
+    use windows::core::Interface;
+
+    let apu_luid = unsafe { apu_device.GetAdapterLuid() };
+
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) else {
+            tracing::debug!("unified memory: failed to create DXGI factory for dGPU search");
+            return;
+        };
+
+        let mut adapter_index = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+            adapter_index += 1;
+
+            let Ok(desc) = adapter.GetDesc1() else { continue; };
+            // Skip software adapters
+            if desc.Flags & windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            // Skip the APU adapter itself
+            if desc.AdapterLuid.LowPart == apu_luid.LowPart && desc.AdapterLuid.HighPart == apu_luid.HighPart {
+                continue;
+            }
+
+            // Try to create a D3D12 device on this adapter
+            let mut dgpu_device: Option<ID3D12Device> = None;
+            let hr = D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut dgpu_device);
+            if hr.is_err() {
+                continue;
+            }
+
+            let Some(dgpu_device) = dgpu_device else { continue; };
+
+            // Check if cross-adapter sharing is supported
+            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
+            let cross_adapter_supported = dgpu_device
+                .CheckFeatureSupport(
+                    D3D12_FEATURE_D3D12_OPTIONS16,
+                    (&raw mut options).cast(),
+                    size_of_val(&options) as u32,
+                )
+                .is_ok()
+                && options.CrossAdapterRowMajorTextureSupported.as_bool();
+
+            if !cross_adapter_supported {
+                tracing::debug!(
+                    vendor = format_args!("{:#x}", desc.VendorId),
+                    device_id = format_args!("{:#x}", desc.DeviceId),
+                    "unified memory: dGPU does not support cross-adapter row-major textures"
+                );
+                continue;
+            }
+
+            // Attach the dGPU for unified memory
+            if let Err(e) = crate::unified_memory_attach_dgpu(dgpu_device) {
+                tracing::warn!(error = %e, "unified memory: failed to attach dGPU");
+                continue;
+            }
+
+            tracing::info!(
+                apu_luid = format_args!("{:#x}:{:#x}", apu_luid.HighPart, apu_luid.LowPart),
+                dgpu_luid = format_args!("{:#x}:{:#x}", desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart),
+                vendor = format_args!("{:#x}", desc.VendorId),
+                device_id = format_args!("{:#x}", desc.DeviceId),
+                "unified memory: attached dGPU for cross-adapter sharing"
+            );
+            break; // Attach only one dGPU for now
+        }
     }
 }
 
