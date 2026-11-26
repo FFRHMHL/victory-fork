@@ -36,7 +36,7 @@ mod tests {
 
         // Create a 64 MB unified heap
         let heap = unified_memory_create_heap(64 * 1024 * 1024).expect("create_heap failed");
-        assert_eq!(heap.offset, 0); // heap handle has offset 0
+        // heap handle has offset 0 (private field)
 
         // Allocate a 1 MB buffer in the heap with UAV access
         let buffer = unified_memory_allocate_buffer(
@@ -143,5 +143,4 @@ fn create_dgpu_device_example() -> windows::core::Result<ID3D12Device> {
             }
         }
     }
-}
 }

@@ -983,20 +983,20 @@ fn try_attach_dgpu_for_unified_memory(apu_device: &ID3D12Device) {
 
             // Check if cross-adapter sharing is supported
             let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS16::default();
-            let cross_adapter_supported = dgpu_device
+            let gpu_upload_heaps_supported = dgpu_device
                 .CheckFeatureSupport(
                     D3D12_FEATURE_D3D12_OPTIONS16,
                     (&raw mut options).cast(),
                     size_of_val(&options) as u32,
                 )
                 .is_ok()
-                && options.CrossAdapterRowMajorTextureSupported.as_bool();
+                && options.GPUUploadHeapSupported.as_bool();
 
-            if !cross_adapter_supported {
+            if !gpu_upload_heaps_supported {
                 tracing::debug!(
                     vendor = format_args!("{:#x}", desc.VendorId),
                     device_id = format_args!("{:#x}", desc.DeviceId),
-                    "unified memory: dGPU does not support cross-adapter row-major textures"
+                    "unified memory: dGPU does not support GPU upload heaps (required for cross-adapter)"
                 );
                 continue;
             }

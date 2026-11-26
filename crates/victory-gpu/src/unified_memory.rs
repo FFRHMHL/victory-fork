@@ -19,14 +19,33 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::ptr::NonNull;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::core::{Interface, Result as WinResult};
+use windows::Win32::Foundation::{HANDLE, LUID};
+use windows::core::Result as WinResult;
 
-use crate::host::{host, Host};
+const GENERIC_ALL: u32 = 0x10000000;
+
+use crate::host::{host, HostList};
+
+/// Wrapper for raw pointer that is Send+Sync.
+/// SAFETY: The CPU mapping is from a D3D12 heap with write-back caching,
+/// accessed only through explicit synchronization (fences/barriers).
+#[derive(Debug)]
+struct CpuPtr(NonNull<u8>);
+
+unsafe impl Send for CpuPtr {}
+unsafe impl Sync for CpuPtr {}
+
+impl CpuPtr {
+    fn as_ptr(&self) -> *mut u8 {
+        self.0.as_ptr()
+    }
+}
 
 /// Global unified memory registry: cross-adapter heaps and their placed buffers.
 /// The APU device (or CPU) writes, the dGPU device reads — or both can write
@@ -58,7 +77,7 @@ struct UnifiedHeap {
     /// The dGPU's handle to the same heap (opened via OpenSharedHandle).
     dgpu_heap: Option<ID3D12Heap>,
     /// NT handle for sharing with dGPU process/device.
-    shared_handle: Option<HANDLE>,
+    shared_handle: Option<windows::Win32::Foundation::HANDLE>,
     /// Buffers placed in this heap, by offset.
     buffers: HashMap<u64, UnifiedBuffer>,
     /// Current allocation cursor (next free offset, 64 KiB aligned).
@@ -77,7 +96,7 @@ struct UnifiedBuffer {
     /// Size in bytes.
     size: u64,
     /// CPU mapping pointer (write-back cached).
-    cpu_mapping: *mut u8,
+    cpu_mapping: CpuPtr,
     /// GPU virtual address on APU device.
     apu_gpu_va: u64,
     /// GPU virtual address on dGPU device.
@@ -114,7 +133,7 @@ impl UnifiedBufferHandle {
         let unified = UNIFIED.get()?.lock().ok()?;
         let heap = unified.heaps.get(&self.heap_id)?;
         let buffer = heap.buffers.get(&self.offset)?;
-        Some(buffer.cpu_mapping)
+        Some(buffer.cpu_mapping.as_ptr())
     }
 
     /// Get the APU GPU virtual address.
@@ -152,16 +171,16 @@ impl UnifiedBufferHandle {
     /// Migrate buffer data from APU (system RAM) to dGPU.
     /// This issues a copy on the dGPU queue from the shared heap buffer
     /// to a dGPU-local buffer, then updates residency.
-    pub fn migrate_to_dgpu(&self, list: &crate::list::HostList) -> WinResult<()> {
-        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?.lock().unwrap();
-        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
-        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+    pub fn migrate_to_dgpu(&self, list: &HostList) -> WinResult<()> {
+        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?.lock().unwrap();
+        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
+        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
 
         if buffer.residency == Residency::Dgpu {
             return Ok(());
         }
-        if buffer.dgpu_buffer.is_none() || buffer.dgpu_device.is_none() {
-            return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+        if buffer.dgpu_buffer.is_none() || heap.dgpu_device.is_none() {
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG));
         }
 
         // Ensure APU writes are visible: flush CPU cache (write-back pages)
@@ -183,16 +202,16 @@ impl UnifiedBufferHandle {
     }
 
     /// Migrate buffer data from dGPU to APU (system RAM).
-    pub fn migrate_to_apu(&self, list: &crate::list::HostList) -> WinResult<()> {
-        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?.lock().unwrap();
-        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
-        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+    pub fn migrate_to_apu(&self, list: &HostList) -> WinResult<()> {
+        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?.lock().unwrap();
+        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
+        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
 
         if buffer.residency == Residency::ApU {
             return Ok(());
         }
         if buffer.dgpu_buffer.is_none() {
-            return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG));
         }
 
         // Copy from dGPU-local buffer to shared heap buffer on dGPU queue
@@ -205,9 +224,9 @@ impl UnifiedBufferHandle {
     /// After a migration copy completes on the dGPU queue, call this to
     /// finalize the residency change and make the data visible on the APU side.
     pub fn finalize_migration(&self, to_dgpu: bool) -> WinResult<()> {
-        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?.lock().unwrap();
-        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
-        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+        let mut unified = UNIFIED.get().ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?.lock().unwrap();
+        let heap = unified.heaps.get_mut(&self.heap_id).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
+        let buffer = heap.buffers.get_mut(&self.offset).ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
 
         if to_dgpu {
             buffer.residency = Residency::Dgpu;
@@ -235,6 +254,11 @@ struct UnifiedMemory {
     dgpu_luid: Option<LUID>,
 }
 
+// SAFETY: D3D12 devices are free-threaded; they can be shared across threads.
+// The unified memory system is only accessed through a Mutex.
+unsafe impl Send for UnifiedMemory {}
+unsafe impl Sync for UnifiedMemory {}
+
 impl UnifiedMemory {
     /// Get or create the global unified memory system.
     fn get_or_init() -> std::sync::MutexGuard<'static, UnifiedMemory> {
@@ -259,7 +283,7 @@ impl UnifiedMemory {
         let apu_luid = unsafe { unified.apu_device.GetAdapterLuid() };
         let dgpu_luid = unsafe { device.GetAdapterLuid() };
         if apu_luid.LowPart == dgpu_luid.LowPart && apu_luid.HighPart == dgpu_luid.HighPart {
-            return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG));
         }
 
         unified.dgpu_device = Some(device.clone());
@@ -318,13 +342,13 @@ impl UnifiedMemory {
         let mut shared_handle: Option<HANDLE> = None;
         if let Some(dgpu_device) = &unified.dgpu_device {
             unsafe {
-                unified.apu_device.CreateSharedHandle(
+                let handle = unified.apu_device.CreateSharedHandle(
                     &heap,
                     None,
-                    windows::Win32::Security::GENERIC_ALL,
+                    GENERIC_ALL,
                     None,
-                    &mut shared_handle,
                 )?;
+                shared_handle = Some(handle);
             }
         }
 
@@ -355,13 +379,17 @@ impl UnifiedMemory {
     /// Returns a handle for CPU/APU and GPU access.
     pub fn allocate_buffer(heap_handle: &UnifiedBufferHandle, size: u64, flags: D3D12_RESOURCE_FLAGS) -> WinResult<UnifiedBufferHandle> {
         let mut unified = Self::get_or_init();
+
+        // Clone APU device before borrowing heap mutably
+        let apu_device = unified.apu_device.clone();
+
         let heap = unified.heaps.get_mut(&heap_handle.heap_id)
-            .ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+            .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
 
         let aligned_size = size.next_multiple_of(64 * 1024);
         let offset = heap.cursor.next_multiple_of(64 * 1024);
         if offset + aligned_size > heap.size {
-            return Err(windows::core::Error::from_hresult(E_OUTOFMEMORY));
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_OUTOFMEMORY));
         }
 
         // Create buffer on APU device, placed in the unified heap
@@ -380,7 +408,7 @@ impl UnifiedMemory {
 
         let mut apu_buffer: Option<ID3D12Resource> = None;
         unsafe {
-            unified.apu_device.CreatePlacedResource(
+            apu_device.CreatePlacedResource(
                 &heap.heap,
                 offset,
                 &buffer_desc,
@@ -396,13 +424,16 @@ impl UnifiedMemory {
         unsafe {
             apu_buffer.Map(0, None, Some(&mut cpu_mapping))?;
         }
+        let cpu_mapping_ptr = cpu_mapping.cast::<u8>();
+        let cpu_mapping = CpuPtr(NonNull::new(cpu_mapping_ptr).unwrap());
 
         let apu_gpu_va = unsafe { apu_buffer.GetGPUVirtualAddress() };
 
         // Create buffer on dGPU if attached
-        let (dgpu_buffer, dgpu_gpu_va) = if let Some(dgpu_device) = &heap.dgpu_device {
-            let mut dgpu_heap = heap.dgpu_heap.as_ref()
-                .ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+        let dgpu_heap_device = heap.dgpu_device.clone();
+        let (dgpu_buffer, dgpu_gpu_va) = if let Some(dgpu_device) = &dgpu_heap_device {
+            let dgpu_heap = heap.dgpu_heap.as_ref()
+                .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
             let mut dgpu_buf: Option<ID3D12Resource> = None;
             unsafe {
                 dgpu_device.CreatePlacedResource(
@@ -424,10 +455,13 @@ impl UnifiedMemory {
         // Create synchronization fences
         let mut apu_to_dgpu_fence: Option<ID3D12Fence> = None;
         let mut dgpu_to_apu_fence: Option<ID3D12Fence> = None;
-        if heap.dgpu_device.is_some() {
+        if dgpu_heap_device.is_some() {
             unsafe {
-                unified.apu_device.CreateFence(0, D3D12_FENCE_FLAG_SHARED, &mut apu_to_dgpu_fence)?;
-                heap.dgpu_device.as_ref().unwrap().CreateFence(0, D3D12_FENCE_FLAG_SHARED, &mut dgpu_to_apu_fence)?;
+                let apu_fence: ID3D12Fence = apu_device.CreateFence(0, D3D12_FENCE_FLAG_SHARED)?;
+                apu_to_dgpu_fence = Some(apu_fence);
+                let dgpu_device = dgpu_heap_device.as_ref().unwrap();
+                let dgpu_fence: ID3D12Fence = dgpu_device.CreateFence(0, D3D12_FENCE_FLAG_SHARED)?;
+                dgpu_to_apu_fence = Some(dgpu_fence);
             }
         }
 
@@ -436,7 +470,7 @@ impl UnifiedMemory {
             dgpu_buffer,
             offset,
             size: aligned_size,
-            cpu_mapping: cpu_mapping.cast(),
+            cpu_mapping,
             apu_gpu_va,
             dgpu_gpu_va,
             residency: Residency::ApU,
@@ -457,7 +491,7 @@ impl UnifiedMemory {
     pub fn release_buffer(handle: &UnifiedBufferHandle) -> WinResult<()> {
         let mut unified = Self::get_or_init();
         let heap = unified.heaps.get_mut(&handle.heap_id)
-            .ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?;
+            .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
         if heap.buffers.remove(&handle.offset).is_some() {
             STATS[3].fetch_add(1, Ordering::Relaxed);
             STATS[4].fetch_sub(1, Ordering::Relaxed); // approximate
@@ -483,7 +517,7 @@ impl UnifiedHeap {
             return Ok(());
         }
         let Some(handle) = self.shared_handle else {
-            return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG));
         };
         let mut heap: Option<ID3D12Heap> = None;
         unsafe {
@@ -497,7 +531,7 @@ impl UnifiedHeap {
 
 /// Public API: initialize unified memory (called automatically on first use).
 pub fn init() -> WinResult<()> {
-    let _ = UnifiedMemory::get_or_init();
+    drop(UnifiedMemory::get_or_init());
     Ok(())
 }
 
@@ -508,17 +542,17 @@ pub fn attach_dgpu(device: ID3D12Device) -> WinResult<()> {
 
 /// Public API: create a unified heap of `size` bytes.
 pub fn create_heap(size: u64) -> WinResult<UnifiedBufferHandle> {
-    UnifiedMemory::get_or_init().create_heap(size)
+    UnifiedMemory::create_heap(size)
 }
 
 /// Public API: allocate a buffer in a unified heap.
 pub fn allocate_buffer(heap: &UnifiedBufferHandle, size: u64, flags: D3D12_RESOURCE_FLAGS) -> WinResult<UnifiedBufferHandle> {
-    UnifiedMemory::get_or_init().allocate_buffer(heap, size, flags)
+    UnifiedMemory::allocate_buffer(heap, size, flags)
 }
 
 /// Public API: release a buffer.
 pub fn release_buffer(handle: &UnifiedBufferHandle) -> WinResult<()> {
-    UnifiedMemory::get_or_init().release_buffer(handle)
+    UnifiedMemory::release_buffer(handle)
 }
 
 /// Public API: get CPU pointer for a buffer.
@@ -547,12 +581,12 @@ pub fn buffer_residency(handle: &UnifiedBufferHandle) -> Option<Residency> {
 }
 
 /// Public API: migrate buffer to dGPU (caller must execute copy on dGPU queue).
-pub fn migrate_to_dgpu(handle: &UnifiedBufferHandle, list: &crate::list::HostList) -> WinResult<()> {
+pub fn migrate_to_dgpu(handle: &UnifiedBufferHandle, list: &HostList) -> WinResult<()> {
     handle.migrate_to_dgpu(list)
 }
 
 /// Public API: migrate buffer to APU (caller must execute copy on dGPU queue).
-pub fn migrate_to_apu(handle: &UnifiedBufferHandle, list: &crate::list::HostList) -> WinResult<()> {
+pub fn migrate_to_apu(handle: &UnifiedBufferHandle, list: &HostList) -> WinResult<()> {
     handle.migrate_to_apu(list)
 }
 
@@ -567,8 +601,5 @@ pub fn print_stats() {
     tracing::info!(
         "unified memory: {} heaps created, {} destroyed, {} buffers placed, {} released, {} MB current, {} APU→dGPU migrations, {} dGPU→APU migrations, {} coherency flushes",
         s[0], s[1], s[2], s[3], s[4] >> 20, s[5], s[6], s[7]
-    );
-}
-}
     );
 }
