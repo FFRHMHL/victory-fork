@@ -108,6 +108,11 @@ enum Command {
         /// The console model the title sees (device type, memory).
         #[arg(long, value_enum, default_value_t = Console::SeriesX)]
         console: Console,
+        /// Automatically press A (Enter) after N seconds to bypass start screens.
+        /// Use comma-separated for multiple presses (e.g. "5,10,15").
+        /// Uses VICTORY_KEYS internally (requires diagnostics feature).
+        #[arg(long)]
+        auto_press_a: Option<String>,
         /// Arguments for the title, after `--` (it reads the whole command
         /// line; a title that relaunches itself passes some).
         #[arg(last = true)]
@@ -195,8 +200,9 @@ fn main() -> Result<()> {
             strict,
             execute,
             console,
+            auto_press_a,
             title_args: _,
-        } => run::run(&exe, unimplemented, strict, execute, console),
+        } => run::run(&exe, unimplemented, strict, execute, console, auto_press_a),
         Command::Preload { validate, pipelines, jobs } => preload::run(validate, pipelines, jobs),
         Command::Config => show_config(),
     }

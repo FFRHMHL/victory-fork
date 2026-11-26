@@ -11,7 +11,19 @@ pub fn run(
     strict: bool,
     execute: bool,
     console: Console,
+    auto_press_a: Option<String>,
 ) -> Result<()> {
+    if let Some(seconds) = auto_press_a {
+        // Enter key (A button on fallback gamepad) held for 0.2s at each given time
+        // Format: "5" or "5,10,15" for multiple presses
+        let keys = seconds
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .map(|s| format!("{}:Enter", s))
+            .collect::<Vec<_>>()
+            .join(",");
+        unsafe { std::env::set_var("VICTORY_KEYS", keys) };
+    }
     use std::sync::Arc;
     use victory_hle::{HleResolver, HostPolicy};
     use victory_loader::{BindReport, UnimplementedPolicy, WithTitleDlls};
