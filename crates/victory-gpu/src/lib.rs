@@ -48,6 +48,8 @@ mod heap_pass;
 #[cfg(windows)]
 pub mod framelog;
 #[cfg(windows)]
+mod gpudetile;
+#[cfg(windows)]
 mod heap_worker;
 #[cfg(windows)]
 mod host;
@@ -57,6 +59,7 @@ mod indirect;
 mod inplace;
 #[cfg(all(windows, feature = "unified_memory"))]
 mod unified_memory;
+mod launch;
 pub mod list;
 pub mod object;
 pub mod pipeline;
