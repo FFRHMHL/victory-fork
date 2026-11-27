@@ -1201,7 +1201,19 @@ impl<'a> Lower<'a> {
             console_lanes = true;
             s.wave_size = Some(32);
         } else if let StageIo::Cs(cs) = x.native.io {
-            s.threads = Some(cs.threads);
+            // Clamp compute thread group size to D3D12 limit of 1024 threads
+            let mut threads = cs.threads;
+            let group = cs.threads.iter().product::<u32>();
+            if group > 1024 {
+                // Scale down proportionally to fit within 1024
+                let scale = (group as f32 / 1024.0).ceil() as u32;
+                threads[0] = threads[0].div_ceil(scale);
+                let group = threads.iter().product::<u32>();
+                if group > 1024 {
+                    threads[1] = threads[1].div_ceil((group as f32 / 1024.0).ceil() as u32);
+                }
+            }
+            s.threads = Some(threads);
             s.lds_dwords = cs.lds_bytes() / 4;
             // Code reading other lanes needs the console's wave size and
             // lane order; so do lane masks read as numbers, and LDS shared
@@ -4379,9 +4391,16 @@ impl<'a> Lower<'a> {
         if mesh.topology != 2 {
             return Err("a mesh shader not drawing triangles");
         }
-        if threads > 128 || mesh.max_vertices > 256 || mesh.max_primitives > 256 {
+        // D3D12 limits: max 256 threads, 256 vertices, 512 primitives per workgroup
+        if threads > 256 || mesh.max_vertices > 256 || mesh.max_primitives > 512 {
             return Err("a mesh shader beyond the host's limits");
         }
+        // Clamp to D3D12 limits to prevent "The parameter is incorrect" on pipeline creation
+        let threads = threads.min(256);
+        let max_vertices = mesh.max_vertices.min(256);
+        let max_primitives = mesh.max_primitives.min(512);
+        mesh.max_vertices = max_vertices;
+        mesh.max_primitives = max_primitives;
         // D3D12 caps the outputs of the declared maxima at 32 KiB. Lane n
         // writes only vertex n and primitive n, so maxima past the lanes are
         // never reached: they come down to the lane count when the outputs

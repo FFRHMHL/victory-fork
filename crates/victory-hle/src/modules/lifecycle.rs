@@ -81,6 +81,10 @@ pub extern "system" fn CreateWindowExW(
         )
     };
     hook(hwnd);
+    // Ensure the window is visible (the title may not pass WS_VISIBLE)
+    if !hwnd.is_null() {
+        unsafe { wm::ShowWindow(hwnd, wm::SW_SHOW) };
+    }
     hwnd
 }
 
@@ -107,6 +111,10 @@ pub extern "system" fn CreateWindowExA(
         )
     };
     hook(hwnd);
+    // Ensure the window is visible (the title may not pass WS_VISIBLE)
+    if !hwnd.is_null() {
+        unsafe { wm::ShowWindow(hwnd, wm::SW_SHOW) };
+    }
     hwnd
 }
 
