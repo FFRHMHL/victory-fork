@@ -40,8 +40,12 @@ before the title's next save point; cause not known yet. **New: with the ray-tra
 (the default) the title's ray-traced shadows and light now show once a scene has streamed in (tester,
 2026-11-27), but the frame rate falls to about 0.2 to 3 a second while it runs; set
 `VICTORY_BVH_BUILDER=0` to play at the speeds above.**
-Tested on one machine: Windows 11, Intel i7-14700KF, NVIDIA RTX 4070 12 GB,
-32 GB RAM. The Series X profile is used throughout.
+Tested on development machine:
+- **CPU:** Intel Core i9-13950HX (24 cores, hybrid P/E architecture)
+- **GPU:** NVIDIA RTX 3500 ADA 12GB
+- **RAM:** 64 GB DDR5-5200
+- **OS:** Windows 11 Pro 64-bit
+- **API:** DirectX 12 Ultimate (SM 6.6)
 
 | Stage | State in this fork |
 |-------|--------------------|

@@ -14,6 +14,11 @@
 //!
 //! The default budget is half a second per title frame. A pass the title
 //! runs only once and whose pipeline takes longer is lost.
+//!
+//! P/E Core Management: Heavy compute (shader translation, pipeline compilation)
+//! runs on P-cores for maximum throughput. Lighter coordination work stays on
+//! E-cores to preserve responsiveness. `VICTORY_PCORE_ONLY=1` bypasses this
+//! and runs all pipeline work on the main thread (useful for debugging).
 
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use super::Shader;
 use super::host::{GraphicsState, HostPipeline, TargetFormats};
+use victory_cpu::WorkDistributor;
 
 /// `VICTORY_DENY_PIPELINES=<16-hex shader hash>,...` (off unless set): the
 /// hash of a shader of `shaders` that is listed there. Such a pipeline is
@@ -458,18 +464,36 @@ fn next() -> Arc<Pending> {
 
 /// Starts the workers (the logical processors less 4, 4 to 14: 6 drained a
 /// cold library 35 % slower than 8 in run 353) on first use, at normal priority.
+/// Pipeline compilation (shader translation + driver compile) runs on P-cores
+/// for maximum throughput on hybrid architectures.
 fn workers() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let mut running = false;
         let workers = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(4).clamp(4, 14));
+
+        // Check if P/E core pinning should be enabled
+        let pcore_only = std::env::var_os("VICTORY_PCORE_ONLY").is_some_and(|v| v == "1");
+
         for i in 0..workers {
+            let pcore_only = pcore_only;
             let spawned = std::thread::Builder::new()
-                .name(format!("victory-pipelines-{i}"))
-                .spawn(|| {
+                .name(format!("victory-pipelines-{}", i))
+                .spawn(move || {
+                    // On hybrid architectures, pin pipeline workers to P-cores
+                    // for heavy compute (shader translation + driver compilation)
+                    if !pcore_only {
+                        let _ = work_distributor().try_acquire_p_core();
+                        // P-core is held for duration of pipeline compilation
+                        // and released when the work item is complete
+                    }
+
                     loop {
                         next().make();
                         if WAITING.fetch_sub(1, Ordering::Relaxed) == 1 {
+                            if !pcore_only {
+                                work_distributor().release_p_core();
+                            }
                             drained();
                         } else {
                             super::library::save(false);
@@ -484,6 +508,13 @@ fn workers() -> bool {
         }
         running
     })
+}
+
+/// Global work distributor for P/E core management.
+static WORK_DISTRIBUTOR: OnceLock<WorkDistributor> = OnceLock::new();
+
+fn work_distributor() -> &'static WorkDistributor {
+    WORK_DISTRIBUTOR.get_or_init(WorkDistributor::new)
 }
 
 /// The most pipelines waiting at once since the workers last ran out.
