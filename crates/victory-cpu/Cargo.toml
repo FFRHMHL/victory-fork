@@ -1,0 +1,15 @@
+[package]
+name = "victory-cpu"
+description = "CPU optimization utilities for GTA6 translation: thread pinning, P/E core management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

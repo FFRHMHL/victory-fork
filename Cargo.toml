@@ -15,6 +15,7 @@ publish = false
 # Internal crates
 victory-core = { path = "crates/victory-core" }
 victory-pe = { path = "crates/victory-pe" }
+victory-cpu = { path = "crates/victory-cpu" }
 victory-loader = { path = "crates/victory-loader" }
 victory-hle = { path = "crates/victory-hle" }
 victory-gpu = { path = "crates/victory-gpu" }

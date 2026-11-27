@@ -10,6 +10,8 @@ pub enum Console {
     #[default]
     SeriesX,
     SeriesS,
+    /// Custom profile: 1080p render target, RT on GPU, Series X memory
+    Custom1080pRT,
 }
 
 impl Console {
@@ -23,6 +25,7 @@ impl Console {
         match self {
             Console::SeriesX => (10 * GIB, 7 * GIB / 2),
             Console::SeriesS => (0, 7_776 << 20),
+            Console::Custom1080pRT => (10 * GIB, 7 * GIB / 2),
         }
     }
 
@@ -30,7 +33,22 @@ impl Console {
         match self {
             Console::SeriesX => "Xbox Series X",
             Console::SeriesS => "Xbox Series S",
+            Console::Custom1080pRT => "Custom 1080p RT",
         }
+    }
+
+    /// Device type reported to the title (1=Lockhart/SeriesS, 2=Anaconda/SeriesX)
+    pub const fn device_type(self) -> u32 {
+        match self {
+            Console::SeriesX => 2,
+            Console::SeriesS => 1,
+            Console::Custom1080pRT => 2,
+        }
+    }
+
+    /// Whether to force 1080p render target
+    pub const fn force_1080p(self) -> bool {
+        matches!(self, Console::Custom1080pRT)
     }
 }
 

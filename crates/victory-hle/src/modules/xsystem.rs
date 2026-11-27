@@ -165,6 +165,7 @@ mod device_type {
         match console {
             Console::SeriesX => 0x64,
             Console::SeriesS => 0x60,
+            Console::Custom1080pRT => 0x64,
         }
     }
 
