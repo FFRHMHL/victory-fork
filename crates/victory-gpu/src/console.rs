@@ -10,8 +10,10 @@ pub enum Console {
     #[default]
     SeriesX,
     SeriesS,
-    /// Custom profile: 1080p render target, RT on GPU, Series X memory
+    /// Custom profile: 1080p render target, RT on GPU, reduced memory for 12GB VRAM
     Custom1080pRT,
+    /// Custom profile: 720p render target, software RT, minimal memory for lower VRAM
+    Custom720p,
 }
 
 impl Console {
@@ -25,7 +27,11 @@ impl Console {
         match self {
             Console::SeriesX => (10 * GIB, 7 * GIB / 2),
             Console::SeriesS => (0, 7_776 << 20),
-            Console::Custom1080pRT => (10 * GIB, 7 * GIB / 2),
+            // Reduced pools for RTX 3500 Ada 12GB: 6GB GpuOptimal + 2GB Standard = 8GB
+            // Leaves headroom for OS, driver, RT structures, and shader cache
+            Console::Custom1080pRT => (6 * GIB, 2 * GIB),
+            // Minimal pools for 720p: 4GB GpuOptimal + 1GB Standard = 5GB
+            Console::Custom720p => (4 * GIB, 1 * GIB),
         }
     }
 
@@ -34,6 +40,7 @@ impl Console {
             Console::SeriesX => "Xbox Series X",
             Console::SeriesS => "Xbox Series S",
             Console::Custom1080pRT => "Custom 1080p RT",
+            Console::Custom720p => "Custom 720p",
         }
     }
 
@@ -43,12 +50,18 @@ impl Console {
             Console::SeriesX => 2,
             Console::SeriesS => 1,
             Console::Custom1080pRT => 2,
+            Console::Custom720p => 2,
         }
     }
 
     /// Whether to force 1080p render target
     pub const fn force_1080p(self) -> bool {
         matches!(self, Console::Custom1080pRT)
+    }
+
+    /// Whether to force 720p render target
+    pub const fn force_720p(self) -> bool {
+        matches!(self, Console::Custom720p)
     }
 }
 

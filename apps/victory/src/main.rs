@@ -146,8 +146,10 @@ enum Unimplemented {
 enum Console {
     SeriesX,
     SeriesS,
-    /// Custom profile: 1080p render target, RT on GPU, Series X memory
+    /// Custom profile: 1080p render target, RT on GPU, reduced memory for 12GB VRAM
     Custom1080pRT,
+    /// Custom profile: 720p render target, software RT, minimal memory for lower VRAM
+    Custom720p,
 }
 
 fn main() -> Result<()> {

@@ -82,6 +82,7 @@ pub fn run(
         Console::SeriesX => victory_hle::console::Console::SeriesX,
         Console::SeriesS => victory_hle::console::Console::SeriesS,
         Console::Custom1080pRT => victory_hle::console::Console::Custom1080pRT,
+        Console::Custom720p => victory_hle::console::Console::Custom720p,
     });
     println!("console        {}", victory_hle::console::current().name());
     let dlls = victory_loader::load_title_dlls(image.info(), title_dir, &images, &wanted)?;

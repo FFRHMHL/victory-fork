@@ -166,6 +166,7 @@ mod device_type {
             Console::SeriesX => 0x64,
             Console::SeriesS => 0x60,
             Console::Custom1080pRT => 0x64,
+            Console::Custom720p => 0x64,
         }
     }
 

@@ -49,7 +49,7 @@ build (`game_scarlett_master.exe` / GTA 6) to run at playable 30 FPS.
 | Profile | Resolution | RT Mode | VRAM Target | Use Case |
 |---------|-----------|---------|-------------|----------|
 | `custom1080p-rt` | 1080p | Hardware RT | ~8-9GB | **Recommended for RTX 3500 Ada** |
-| `custom720p` | 720p | Software RT | ~6-7GB | Lower VRAM / older GPUs |
+| `custom720p` | 720p | Software RT | ~5-6GB | Lower VRAM / older GPUs |
 
 ### Environment Variables
 
@@ -57,9 +57,14 @@ build (`game_scarlett_master.exe` / GTA 6) to run at playable 30 FPS.
 # Pool sizing (adjust for your VRAM)
 $env:VICTORY_XBOX_GPU_OPTIMAL_MB = "6144"   # 6GB GpuOptimal pool (default 10GB)
 $env:VICTORY_XBOX_STANDARD_MB    = "2048"   # 2GB Standard pool (default 6GB)
+# For 720p profile (even smaller pools)
+$env:VICTORY_XBOX_GPU_OPTIMAL_MB = "4096"   # 4GB GpuOptimal pool for 720p
+$env:VICTORY_XBOX_STANDARD_MB    = "1024"   # 1GB Standard pool for 720p
 
 # Profile selection
 $env:VICTORY_PROFILE = "custom1080p-rt"     # 1080p + hardware ray tracing
+# Or for 720p:
+$env:VICTORY_PROFILE = "custom720p"         # 720p + software ray tracing
 
 # Test configuration
 $env:SKIP_D3D12_TESTS = "1"                 # Skip D3D12 tests in CI
@@ -73,6 +78,7 @@ $env:VICTORY_RAW_VIEW_CLAMP = "1"           # Clamp buffer views to allocation b
 
 ### Quick Start (RTX 3500 Ada 12GB)
 
+**For 1080p with Hardware Ray Tracing (recommended):**
 ```powershell
 # 1. Configure pool sizes for 12GB VRAM (leave headroom for OS/driver)
 $env:VICTORY_XBOX_GPU_OPTIMAL_MB = "6144"
@@ -85,7 +91,23 @@ $env:VICTORY_PROFILE = "custom1080p-rt"
 cargo build --release -p victory --features unified_memory
 
 # 4. Run the Scarlett build
-target\release\victory.exe run "C:\Path\To\game_scarlett_master.exe" --execute
+target\release\victory.exe run "C:\Path\To\game_scarlett_master.exe" --execute --console custom1080p-rt
+```
+
+**For 720p with Software Ray Tracing (lower VRAM GPUs):**
+```powershell
+# 1. Configure minimal pool sizes
+$env:VICTORY_XBOX_GPU_OPTIMAL_MB = "4096"
+$env:VICTORY_XBOX_STANDARD_MB    = "1024"
+
+# 2. Use the custom 720p profile
+$env:VICTORY_PROFILE = "custom720p"
+
+# 3. Build release
+cargo build --release -p victory --features unified_memory
+
+# 4. Run the Scarlett build
+target\release\victory.exe run "C:\Path\To\game_scarlett_master.exe" --execute --console custom720p
 ```
 
 ### Performance Results
