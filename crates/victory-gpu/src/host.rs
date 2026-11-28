@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, GetCurrentThread, INFINITE, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL, WaitForSingleObject};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Interface, PCWSTR, w};
 
@@ -1684,7 +1684,7 @@ mod tests {
 }
 
 /// A host command list and its allocator, always used together.
-pub(crate) struct HostList {
+pub struct HostList {
     allocator: ID3D12CommandAllocator,
     pub(crate) list: ID3D12GraphicsCommandList,
     /// Work for submission time, in recorded order.
@@ -4866,6 +4866,10 @@ fn host_fence_completion_rejects_removed_device() {
 /// value while the submitting thread waits for that thread would never
 /// see it.
 fn late_helper() {
+    // Set above-normal priority for helper thread if env var is set
+    if std::env::var_os("VICTORY_HELPER_PRIORITY").is_some_and(|v| v == "1") {
+        unsafe { let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); };
+    }
     let Some(host) = host() else {
         return;
     };
@@ -4987,6 +4991,10 @@ struct RelayFetch {
 /// anything a caller of [`Host::settle`] may hold: resetting the landed
 /// lists and looking at what queues hold are left to [`late_helper`].
 fn relay_worker() {
+    // Set above-normal priority for helper thread if env var is set
+    if std::env::var_os("VICTORY_HELPER_PRIORITY").is_some_and(|v| v == "1") {
+        unsafe { let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); };
+    }
     let Some(host) = host() else {
         return;
     };

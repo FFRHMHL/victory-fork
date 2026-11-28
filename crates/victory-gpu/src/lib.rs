@@ -52,7 +52,9 @@ mod gpudetile;
 #[cfg(windows)]
 mod heap_worker;
 #[cfg(windows)]
-mod host;
+pub mod host;
+#[cfg(windows)]
+pub use host::HostList;
 #[cfg(windows)]
 mod indirect;
 #[cfg(windows)]
@@ -120,5 +122,18 @@ pub use unified_memory::{
     finalize_migration as unified_memory_finalize_migration,
     print_stats as unified_memory_print_stats,
     Residency,
+    UnifiedResidency,
     UnifiedBufferHandle,
+    // Xbox unified memory emulation
+    xbox_unified_init,
+    xbox_unified_allocate_buffer,
+    xbox_unified_migrate_to_gpu_optimal,
+    xbox_unified_migrate_to_standard,
+    xbox_unified_migrate_to_system,
+    xbox_unified_finalize_migration,
+    xbox_unified_record_mip_access,
+    xbox_unified_process_sfs_feedback,
+    xbox_unified_print_stats,
+    XboxMemoryPool,
+    XboxUnifiedBufferHandle,
 };

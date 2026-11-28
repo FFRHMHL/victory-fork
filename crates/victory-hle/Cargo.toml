@@ -51,7 +51,7 @@ tempfile.workspace = true
 # Debugging switches (scripted keys and the like).
 diagnostics = ["victory-gpu/diagnostics", "victory-loader/diagnostics", "dep:windows", "dep:windows-core"]
 # Unified memory for APU↔dGPU graphics allocations (cross-adapter heaps).
-unified_memory = ["victory-gpu/unified_memory"]
+unified_memory = ["victory-gpu/unified_memory", "dep:windows"]
 
 [lints]
 workspace = true

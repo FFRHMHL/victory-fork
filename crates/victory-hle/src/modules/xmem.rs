@@ -35,9 +35,10 @@ use crate::{HleModule, hle_export};
 #[cfg(all(windows, feature = "unified_memory"))]
 use victory_gpu::{
     unified_memory_create_heap, unified_memory_allocate_buffer, unified_memory_cpu_ptr,
-    unified_memory_apu_gpu_va, unified_memory_release_buffer,
-    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+    unified_memory_apu_gpu_va,
 };
+#[cfg(all(windows, feature = "unified_memory"))]
+use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
 const MIB: usize = 1 << 20;
 
@@ -60,6 +61,10 @@ static TRANSFERRED: AtomicUsize = AtomicUsize::new(0);
 /// Unified memory heap for graphics allocations (created on first graphics alloc).
 #[cfg(all(windows, feature = "unified_memory"))]
 static UNIFIED_HEAP: std::sync::OnceLock<victory_gpu::UnifiedBufferHandle> = std::sync::OnceLock::new();
+
+/// Xbox unified memory buffer for graphics allocations (created on first graphics alloc).
+#[cfg(all(windows, feature = "unified_memory"))]
+static XBOX_UNIFIED_HEAP: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 // Console additions to the host's flags.
 /// 2 MiB pages; the host reads this bit as large pages, which need a
@@ -229,6 +234,49 @@ fn virtual_alloc(
                         "XMemVirtualAlloc: graphics memory also in unified heap"
                     );
                 }
+            }
+        }
+
+        // Initialize Xbox unified memory on first graphics allocation
+        XBOX_UNIFIED_HEAP.get_or_init(|| {
+            // Initialize Xbox unified memory system
+            if let Err(e) = victory_gpu::xbox_unified_init() {
+                tracing::warn!(error = %e, "Xbox unified memory: failed to initialize");
+            } else {
+                tracing::info!("Xbox unified memory: initialized for graphics allocations");
+            }
+        });
+
+        // Allocate in Xbox unified memory for graphics memory
+        // Classify based on allocation size and type
+        let target_pool = if size >= 4 * 1024 * 1024 {
+            // Large allocations (≥4 MB) go to GPU Optimal pool (VRAM)
+            victory_gpu::XboxMemoryPool::GpuOptimal
+        } else if size >= 64 * 1024 {
+            // Medium allocations go to Standard pool
+            victory_gpu::XboxMemoryPool::Standard
+        } else {
+            // Small allocations go to System pool
+            victory_gpu::XboxMemoryPool::System
+        };
+
+        let buffer_size = size.next_multiple_of(64 * 1024);
+        if let Ok(xbox_buffer) = victory_gpu::xbox_unified_allocate_buffer(buffer_size as u64, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, target_pool) {
+            if let Some(cpu_ptr) = xbox_buffer.cpu_ptr() {
+                // Copy any initial data from the regular allocation to Xbox unified buffer
+                if protect != PAGE_NOACCESS {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(at as *const u8, cpu_ptr, size.min(buffer_size));
+                    }
+                }
+                tracing::debug!(
+                    address = format_args!("{at:p}"),
+                    size,
+                    target_pool = format_args!("{:?}", target_pool),
+                    xbox_apu_gpu_va = format_args!("{:#x}", xbox_buffer.apu_gpu_va().unwrap_or(0)),
+                    xbox_dgpu_gpu_va = format_args!("{:#x}", xbox_buffer.dgpu_gpu_va().unwrap_or(0)),
+                    "XMemVirtualAlloc: graphics memory also in Xbox unified memory"
+                );
             }
         }
     }

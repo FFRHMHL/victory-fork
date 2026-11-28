@@ -942,6 +942,41 @@ pub(crate) fn is_texture_view(view: &View) -> bool {
 /// ([`buffer_view_ok`]), since the start.
 pub(crate) static REFUSED_VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Buffer views left null because they extended past their buffer's end
+/// (raw views that were clamped or rejected).
+pub(crate) static CUT_VIEW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A range of elements in a buffer view, after clamping to the buffer's bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawRange {
+    /// The first element (dword) in the view.
+    pub(crate) first: u64,
+    /// The element count, clamped to fit in the buffer.
+    pub(crate) elements: u32,
+}
+
+/// Computes the safe range for a raw buffer view within a host buffer of `width` bytes.
+/// Raw views are dword-indexed, starting on 16-byte boundaries.
+/// Returns the clamped range that fits within the buffer.
+pub(crate) fn raw_view_range(first: u64, count: u32, width: u64) -> RawRange {
+    let enabled = std::env::var("VICTORY_RAW_VIEW_CLAMP").ok().map_or(false, |v| !v.is_empty());
+    if !enabled {
+        return RawRange { first, elements: count };
+    }
+
+    let byte_offset = first * 4;
+    if byte_offset >= width {
+        CUT_VIEW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return RawRange { first: 0, elements: 0 };
+    }
+    let bytes_available = width - byte_offset;
+    let new_count = u32::try_from(bytes_available.div_ceil(4)).unwrap_or(0);
+    if new_count != count {
+        CUT_VIEW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    RawRange { first, elements: new_count }
+}
+
 /// Whether the host device is gone, and why (the first time it is asked
 /// after that): for passes that make many views, to name the one that did
 /// it.
@@ -3337,10 +3372,26 @@ fn buffer_srv(
         }
         buffer.FirstElement += offset / element;
     }
-    let (first, count, stride) = (buffer.FirstElement, buffer.NumElements, buffer.StructureByteStride);
     let raw = buffer.Flags.0 & D3D12_BUFFER_SRV_FLAG_RAW.0 != 0;
     // SAFETY: a live buffer.
     let width = unsafe { shadow.buffer.GetDesc() }.Width;
+    // Clamp raw views to their buffer's bounds if enabled.
+    if raw {
+        let (first, count) = (buffer.FirstElement, buffer.NumElements);
+        let clamped = raw_view_range(first, count, width);
+        if clamped.elements != count {
+            once!(
+                first,
+                count,
+                clamped.elements,
+                width,
+                "raw buffer view clamped to buffer bounds"
+            );
+            buffer.FirstElement = clamped.first;
+            buffer.NumElements = clamped.elements;
+        }
+    }
+    let (first, count, stride) = (buffer.FirstElement, buffer.NumElements, buffer.StructureByteStride);
     if !buffer_view_ok(desc.Format, first, count, stride, raw, width) {
         REFUSED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         once!(
@@ -3435,8 +3486,6 @@ fn buffer_uav(
         buffer.FirstElement += offset / element;
     }
     buffer.CounterOffsetInBytes = 0;
-    let (first, count, stride) = (buffer.FirstElement, buffer.NumElements, buffer.StructureByteStride);
-    let raw = buffer.Flags.0 & D3D12_BUFFER_UAV_FLAG_RAW.0 != 0;
     desc.Format = bit_exact_format(desc.Format);
     if window.is_some() {
         // (Left out at first: every structured unordered access view was then
@@ -3445,6 +3494,13 @@ fn buffer_uav(
     }
     // SAFETY: a live buffer.
     let width = unsafe { shadow.buffer.GetDesc() }.Width;
+    let raw = buffer.Flags.0 & D3D12_BUFFER_UAV_FLAG_RAW.0 != 0;
+    // For UAVs (unordered access / write paths), do not clamp raw views.
+    // Clamping can create empty views (first: 0, elements: 0) which cause
+    // null pointer writes at address 0x0 when shaders append to buffers.
+    // For SRV reads, clamping is safe - out-of-bounds is undefined behavior anyway.
+    // Only clamp SRVs (buffer_srv), not UAVs (buffer_uav).
+    let (first, count, stride) = (buffer.FirstElement, buffer.NumElements, buffer.StructureByteStride);
     if !buffer_view_ok(desc.Format, first, count, stride, raw, width) {
         REFUSED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         once!(

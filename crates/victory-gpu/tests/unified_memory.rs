@@ -19,7 +19,7 @@ use victory_gpu::{
     unified_memory_migrate_to_apu,
     unified_memory_finalize_migration,
     unified_memory_print_stats,
-    Residency,
+    UnifiedResidency,
     UnifiedBufferHandle,
 };
 use windows::Win32::Graphics::Direct3D12::*;
@@ -69,7 +69,7 @@ mod tests {
         assert_eq!(size, 1024 * 1024);
 
         let residency = unified_memory_buffer_residency(&buffer).expect("buffer_residency failed");
-        assert_eq!(residency, Residency::ApU);
+        assert_eq!(residency, UnifiedResidency::ApU);
 
         // Print stats
         unified_memory_print_stats();
@@ -93,7 +93,7 @@ mod tests {
         ).expect("allocate_buffer failed");
 
         // Initial residency is APU (system RAM)
-        assert_eq!(unified_memory_buffer_residency(&buffer), Some(Residency::ApU));
+        assert_eq!(unified_memory_buffer_residency(&buffer), Some(UnifiedResidency::ApU));
 
         // Migration to dGPU (requires dGPU device attached and a command list)
         // unified_memory_migrate_to_dgpu(&buffer, &list).expect("migrate_to_dgpu failed");

@@ -185,8 +185,6 @@ impl Default for ThreadPool {
 pub struct WorkDistributor {
     p_cores_available: AtomicUsize,
     e_cores_available: AtomicUsize,
-    max_p_workers: usize,
-    max_e_workers: usize,
 }
 
 impl WorkDistributor {
@@ -199,8 +197,6 @@ impl WorkDistributor {
         Self {
             p_cores_available: AtomicUsize::new(p_cores),
             e_cores_available: AtomicUsize::new(e_cores),
-            max_p_workers: p_cores.max(1),
-            max_e_workers: e_cores.max(1),
         }
     }
 
